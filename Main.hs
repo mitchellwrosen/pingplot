@@ -2,23 +2,23 @@ module Main (main) where
 
 import Control.Concurrent.STM
 import Control.Monad (forever)
+import Data.Foldable qualified as Foldable
 import Data.Function ((&))
 import Data.List qualified as List
 import Data.Maybe (fromJust)
+import Data.Sequence (Seq)
+import Data.Sequence qualified as Seq
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.IO (hGetLine)
 import Data.Text.Read qualified as Text
-import GHC.Clock
+import GHC.Clock (getMonotonicTime)
 import Ki qualified
-import Data.Sequence (Seq)
-import Data.Sequence qualified as Seq
 import System.Exit (exitFailure)
 import System.IO (Handle)
 import System.Process
 import Termbox.Tea
-import Text.Printf
-import qualified Data.Foldable as Foldable
+import Text.Printf (printf)
 
 main :: IO ()
 main = do
@@ -29,9 +29,9 @@ main = do
       withPingProcess \stdout ->
         forever do
           line <- hGetLine stdout
-          whenJust (parsePongTime line) \time -> do
-            timestamp <- getMonotonicTime
-            atomically (writeTQueue pongQueue Pong {timestamp, time})
+          timestamp <- getMonotonicTime
+          whenJust (parsePong timestamp line) \pong -> do
+            atomically (writeTQueue pongQueue pong)
 
     tuiMain pongQueue
 
@@ -41,7 +41,6 @@ tuiMain pongQueue = do
       initialize size =
         S
           { done = False,
-            numPongs = 0,
             pongs = Seq.empty,
             size
           }
@@ -60,33 +59,25 @@ tuiMain pongQueue = do
               _ -> state
           EventResize size -> state {size}
           EventMouse _ -> state
-          EventUser pong ->
-            state
-              { numPongs = state.numPongs + 1,
-                pongs = state.pongs Seq.|> pong
-              }
+          EventUser pong -> state {pongs = insertPong pong state.pongs}
 
   let render :: S -> Scene
       render state =
-        let pongs = Foldable.toList (Seq.drop (state.numPongs - state.size.width) state.pongs)
-            npongs = min state.numPongs state.size.width
+        let pongs = Foldable.toList (Seq.drop (Seq.length state.pongs - state.size.width) state.pongs)
+            npongs = min (Seq.length state.pongs) state.size.width
             slowest =
               List.foldl'
-                ( \acc pong ->
-                    case pong.time of
-                      PongTime ms -> max acc ms
-                      PongTimeout -> acc
-                )
+                (\acc pong -> max acc pong.milliseconds)
                 0
                 pongs
-            msHeight ms = round @Double @Int ((ms / slowest) * realToFrac @Int @Double state.size.height)
+            msHeight ms = max 1 (round @Double @Int ((ms / slowest) * realToFrac @Int @Double state.size.height))
          in image
               ( ( pongs & zip [0 ..] & foldMap \(i, pong) ->
                     let col = state.size.width - npongs + i
                         height =
-                          case pong.time of
-                            PongTime ms -> msHeight ms
-                            PongTimeout -> 0
+                          case pong.milliseconds of
+                            0 -> 0
+                            ms -> msHeight ms
                      in [state.size.height - height .. state.size.height - 1] & foldMap \row ->
                           char ' '
                             & bg green
@@ -115,15 +106,8 @@ tuiMain pongQueue = do
 
 data S = S
   { done :: !Bool,
-    numPongs :: !Int,
     pongs :: !(Seq Pong),
     size :: !Size
-  }
-  deriving stock (Show)
-
-data Pong = Pong
-  { timestamp :: !Double,
-    time :: !PongTime
   }
   deriving stock (Show)
 
@@ -132,16 +116,34 @@ withPingProcess action =
   withCreateProcess ((shell "ping -Q 8.8.8.8") {std_err = NoStream, std_out = CreatePipe}) \_ stdout _ _ ->
     action (fromJust stdout)
 
-data PongTime
-  = PongTime !Double
-  | PongTimeout
+data Pong = Pong
+  { timestamp :: !Double, -- monotonic time this pong was received
+    icmp :: !Int, -- ping sequence number
+    milliseconds :: !Double
+  }
   deriving stock (Show)
 
-parsePongTime :: Text -> Maybe PongTime
-parsePongTime line
-  | Right (ms, _) <- Text.double (Text.takeWhileEnd (/= '=') line) = Just (PongTime ms)
-  | "Request timeout" `Text.isPrefixOf` line = Just PongTimeout
+parsePong :: Double -> Text -> Maybe Pong
+parsePong timestamp line
+  | "64 bytes from 8.8.8.8" `Text.isPrefixOf` line = do
+      [icmp0, _ttl, milliseconds0, "ms"] <- Just (Text.words (Text.drop 23 line))
+      icmp1 <- Text.stripPrefix "icmp_seq=" icmp0
+      Right (icmp, "") <- Just (Text.decimal icmp1)
+      milliseconds1 <- Text.stripPrefix "time=" milliseconds0
+      Right (milliseconds, "") <- Just (Text.double milliseconds1)
+      Just Pong {timestamp, icmp, milliseconds}
+  | "Request timeout" `Text.isPrefixOf` line = do
+      Right (icmp, "") <- Just (Text.decimal (Text.takeWhileEnd (/= ' ') line))
+      Just Pong {timestamp, icmp, milliseconds = 0}
   | otherwise = Nothing
+
+-- Insert a pong at the end, maintaining sorted icmp sequence number order
+insertPong :: Pong -> Seq Pong -> Seq Pong
+insertPong pong = \case
+  Seq.Empty -> Seq.singleton pong
+  xs@(ys Seq.:|> z)
+    | pong.icmp > z.icmp -> xs Seq.|> pong
+    | otherwise -> insertPong pong ys Seq.|> z
 
 whenJust :: (Applicative m) => Maybe a -> (a -> m ()) -> m ()
 whenJust x f =

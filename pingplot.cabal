@@ -16,9 +16,11 @@ executable pingplot
   default-extensions:
     BlockArguments
     DerivingStrategies
+    DuplicateRecordFields
     LambdaCase
     OverloadedRecordDot
     OverloadedStrings
+    ViewPatterns
   default-language: GHC2021
   ghc-options: -Wall -threaded -rtsopts "-with-rtsopts=-N2"
   main-is: Main.hs
