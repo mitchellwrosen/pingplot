@@ -1,0 +1,24 @@
+cabal-version: 2.4
+
+name: pingplot
+version: 0
+
+executable pingplot
+  build-depends:
+    base,
+    containers,
+    ki,
+    process,
+    queues,
+    stm,
+    termbox-tea,
+    text,
+  default-extensions:
+    BlockArguments
+    DerivingStrategies
+    LambdaCase
+    OverloadedRecordDot
+    OverloadedStrings
+  default-language: GHC2021
+  ghc-options: -Wall -threaded -rtsopts "-with-rtsopts=-N2"
+  main-is: Main.hs
