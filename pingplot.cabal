@@ -7,12 +7,15 @@ executable pingplot
   build-depends:
     base,
     containers,
+    foldl,
     ki,
     process,
+    profunctors,
     queues,
     stm,
     termbox-tea,
     text,
+    witherable,
   default-extensions:
     BlockArguments
     DerivingStrategies
