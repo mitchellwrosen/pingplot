@@ -23,6 +23,7 @@ executable pingplot
     LambdaCase
     OverloadedRecordDot
     OverloadedStrings
+    PatternSynonyms
     ViewPatterns
   default-language: GHC2021
   ghc-options: -Wall -threaded -rtsopts "-with-rtsopts=-N2"
