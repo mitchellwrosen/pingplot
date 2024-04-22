@@ -3,7 +3,7 @@ module Main (main) where
 import Control.Concurrent.STM
 import Control.Foldl qualified as Foldl
 import Control.Monad (forever)
-import Data.Bits (unsafeShiftL)
+import Data.Bits (unsafeShiftL, unsafeShiftR)
 import Data.Foldable (fold)
 import Data.Foldable qualified as Foldable
 import Data.Function ((&))
@@ -56,7 +56,8 @@ tuiMain pongQueue beginning = do
             pongs = Seq.empty,
             size,
             smoothLevel = SmoothLevel0,
-            timestamp = beginning
+            timestamp = beginning,
+            ymax = 32
           }
 
   let pollEvent :: Maybe (IO Pong)
@@ -68,6 +69,8 @@ tuiMain pongQueue beginning = do
         pure case event of
           EventKey key ->
             case key of
+              KeyArrowDown -> state {ymax = if state.ymax > 16 then unsafeShiftR state.ymax 1 else state.ymax}
+              KeyArrowUp -> state {ymax = if state.ymax < 8192 then unsafeShiftL state.ymax 1 else state.ymax}
               KeyChar 'q' -> state {done = True}
               KeyChar 's' -> state {smoothLevel = cycleSmoothLevel state.smoothLevel}
               KeyEsc -> state {done = True}
@@ -103,7 +106,8 @@ data State = State
     pongs :: !(Seq Pong), -- Every pong we've received, ordered by sequence number
     size :: {-# UNPACK #-} !Size, -- The size of the terminal
     smoothLevel :: !SmoothLevel, -- How much to smooth?
-    timestamp :: {-# UNPACK #-} !Double -- The current monotonic time
+    timestamp :: {-# UNPACK #-} !Double, -- The current monotonic time
+    ymax :: {-# UNPACK #-} !Word -- The maximum y value on the graph, a power of 2
   }
   deriving stock (Show)
 
@@ -149,8 +153,10 @@ renderState beginning state =
                 SmoothLevel2 -> smoothBuckets5 (.averagePong) (\averagePong summary -> summary {averagePong})
          in smooth summaries0
 
-      slowest = roundUp2 (summarizeBuckets (.averagePong) summaries)
-      vh = (`divMod` 8) . max 1 . round @Double @Int . (* 8) . (* i2d barsSize.height) . (/ w2d slowest)
+      _slowest = summarizeBuckets (.averagePong) summaries
+
+      -- height of a value, ignoring that we may be zoomed in too far
+      vh = (`divMod` 8) . max 1 . round @Double @Int . (* 8) . (* i2d barsSize.height) . (/ w2d state.ymax)
 
       rect :: Pos -> Size -> Image -> Image
       rect pos size cell =
@@ -178,7 +184,7 @@ renderState beginning state =
           -- Draw the corner
           char '└' & at Pos {row = barsPos.row + barsSize.height, col = barsPos.col - 1},
           -- Draw the top-left label
-          printf "%4d┼" slowest & zip [0 ..] & foldMap \(col, c) ->
+          printf "%4d┼" state.ymax & zip [0 ..] & foldMap \(col, c) ->
             char c & at Pos {row = barsPos.row, col},
           -- Draw the buckets
           summaries & Foldable.toList & zip [0 ..] & foldMap \(i, summary) ->
@@ -187,9 +193,15 @@ renderState beginning state =
                     { row = barsPos.row + barsSize.height - size.height,
                       col = barsPos.col + i * size.width
                     }
-                (size, cap) =
-                  let (height, cap0) = if summary.numTimedOutPongs == 0 then vh summary.averagePong else (0, 0)
-                   in (Size {width = 1, height}, cap0)
+                (idealHeight, cap) =
+                  if summary.numTimedOutPongs == 0
+                    then vh summary.averagePong
+                    else (0, 0)
+                size =
+                  Size
+                    { width = 1,
+                      height = min idealHeight barsSize.height
+                    }
                 capi =
                   case cap of
                     1 -> char '▁'
@@ -200,14 +212,23 @@ renderState beginning state =
                     6 -> char '▆'
                     7 -> char '▇'
                     _ -> mempty
-             in fold
-                  [ rect pos size (char ' ' & bg green),
-                    capi & fg green & at (pos & posUp 1),
-                    dottedRows & foldMap \row ->
-                      if pos.row <= row
-                        then let col = pos.col in char '┄' & fg (gray 0) & bg green & at Pos {row, col}
-                        else mempty
-                  ],
+                clipping = (idealHeight > size.height) || (idealHeight == barsSize.height && cap > 0)
+             in if clipping
+                  then
+                    fold
+                      [ rect pos size (char ' ' & bg yellow),
+                        dottedRows & foldMap \row ->
+                          let col = pos.col in char '┄' & fg (gray 0) & bg yellow & at Pos {row, col}
+                      ]
+                  else
+                    fold
+                      [ rect pos size (char ' ' & bg green),
+                        capi & fg green & at (pos & posUp 1),
+                        dottedRows & foldMap \row ->
+                          if pos.row <= row
+                            then let col = pos.col in char '┄' & fg (gray 0) & bg green & at Pos {row, col}
+                            else mempty
+                      ],
           -- Draw some temporary boundaries just to see stuff
           [0, 1, state.size.height - 2, state.size.height - 1] & foldMap \row ->
             [0 .. state.size.width - 1] & foldMap \col ->
@@ -469,13 +490,13 @@ w2d = realToFrac
 
 -- Round up to the next power of 2.
 --
--- >>> roundUp2 117
+-- >>> _roundUp2 117
 -- 128
 --
--- >>> roundUp2 128
+-- >>> _roundUp2 128
 -- 128
-roundUp2 :: Double -> Word
-roundUp2 n
+_roundUp2 :: Double -> Word
+_roundUp2 n
   | w1 == w2 = w2
   | otherwise = unsafeShiftL w2 1
   where
