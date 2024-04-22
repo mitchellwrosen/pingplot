@@ -146,10 +146,17 @@ cycleSmoothLevel = \case
 
 renderState :: Double -> State -> Scene
 renderState beginning state =
-  let barsPos = Pos {row = 2, col = 5}
+  let barsPos =
+        Pos
+          { row = 2,
+            col = state.size.width - barsSize.width
+          }
+
       barsSize =
         Size
-          { width = state.size.width - 2,
+          { width =
+              let maxWidth = state.size.width - 5
+               in min maxWidth (Seq.length pongs),
             height = state.size.height - 5
           }
 
@@ -209,8 +216,8 @@ renderState beginning state =
           -- Draw the corner
           char '├' & at Pos {row = barsPos.row + barsSize.height, col = barsPos.col - 1},
           -- Draw the top-left label
-          printf "%4d┼" state.ymax & zip [0 ..] & foldMap \(col, c) ->
-            char c & at Pos {row = barsPos.row, col},
+          printf "%4d┼" state.ymax & zip [0 ..] & foldMap \(i, c) ->
+            let col = barsPos.col - 5 + i in char c & at Pos {row = barsPos.row, col},
           -- Draw the bottom-left label
           let row = barsPos.row + barsSize.height + 1
               (m, s) =
