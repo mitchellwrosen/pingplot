@@ -45,6 +45,7 @@ runPingThread pongQueue =
   where
     config :: CreateProcess
     config =
+      -- don't change 4 pings per second without adjusting [pings-per-second] elsewhere
       (shell "ping -i 0.25 -Q 8.8.8.8") {std_err = NoStream, std_out = CreatePipe}
 
 tuiMain :: TQueue Pong -> Double -> IO ()
@@ -57,6 +58,7 @@ tuiMain pongQueue beginning = do
             size,
             smoothLevel = SmoothLevel0,
             timestamp = beginning,
+            xrange = Nothing,
             ymax = 32
           }
 
@@ -69,6 +71,24 @@ tuiMain pongQueue beginning = do
         pure case event of
           EventKey key ->
             case key of
+              KeyArrowLeft ->
+                state
+                  { xrange =
+                      case state.xrange of
+                        Nothing ->
+                          let chunksOf30 = fst (properFraction ((state.timestamp - beginning) / 30))
+                           in if chunksOf30 == 0 then Nothing else Just (chunksOf30 * 30)
+                        Just n -> Just (max 30 (n - 30))
+                  }
+              KeyArrowRight ->
+                state
+                  { xrange =
+                      case state.xrange of
+                        Nothing -> Nothing
+                        Just n ->
+                          let n1 = n + 30
+                           in if i2d n1 > state.timestamp - beginning then Nothing else Just n1
+                  }
               KeyArrowDown -> state {ymax = if state.ymax > 16 then unsafeShiftR state.ymax 1 else state.ymax}
               KeyArrowUp -> state {ymax = if state.ymax < 8192 then unsafeShiftL state.ymax 1 else state.ymax}
               KeyChar 'q' -> state {done = True}
@@ -107,6 +127,7 @@ data State = State
     size :: {-# UNPACK #-} !Size, -- The size of the terminal
     smoothLevel :: !SmoothLevel, -- How much to smooth?
     timestamp :: {-# UNPACK #-} !Double, -- The current monotonic time
+    xrange :: {-# UNPACK #-} !(Maybe Int), -- The latest number of seconds, or everything
     ymax :: {-# UNPACK #-} !Word -- The maximum y value on the graph, a power of 2
   }
   deriving stock (Show)
@@ -138,8 +159,16 @@ renderState beginning state =
       oneEighthRow = (barsPos.row + barsSize.height + 2) * 7 `div` 8
       dottedRows = [oneHalfRow, oneQuarterRow, oneEighthRow]
 
+      -- Maybe throw away some old pongs per xrange. This is just approximate since pongs are in icmp order, not
+      -- timestamp order. If we want the latest 30 seconds, we just take the last 30*[pings-per-second]=120 pongs from
+      -- the end
+      pongs =
+        case state.xrange of
+          Nothing -> state.pongs
+          Just xrange -> Seq.drop (Seq.length state.pongs - (xrange * 4)) state.pongs
+
       -- Bucket all the pongs per the number of bars we can show
-      buckets = bucketThePongs (.icmp) barsSize.width state.pongs
+      buckets = bucketThePongs (.icmp) barsSize.width pongs
 
       -- Summarize each bucket
       summaries0 = summarizeBucket (.milliseconds) <$> buckets
@@ -176,16 +205,22 @@ renderState beginning state =
                 ],
           -- Draw the X axis
           let row = barsPos.row + barsSize.height
-           in fold
-                [ [barsPos.col .. barsPos.col + barsSize.width - 1] & foldMap \col -> char '─' & at Pos {row, col},
-                  printf "%.0fs" (state.timestamp - beginning) & zip [0 ..] & foldMap \(i, c) ->
-                    let col = barsPos.col + i in char c & at Pos {row, col}
-                ],
+           in [barsPos.col .. barsPos.col + barsSize.width - 1] & foldMap \col -> char '─' & at Pos {row, col},
           -- Draw the corner
-          char '└' & at Pos {row = barsPos.row + barsSize.height, col = barsPos.col - 1},
+          char '├' & at Pos {row = barsPos.row + barsSize.height, col = barsPos.col - 1},
           -- Draw the top-left label
           printf "%4d┼" state.ymax & zip [0 ..] & foldMap \(col, c) ->
             char c & at Pos {row = barsPos.row, col},
+          -- Draw the bottom-left label
+          let row = barsPos.row + barsSize.height + 1
+              (m, s) =
+                let s0 =
+                      case state.xrange of
+                        Nothing -> state.timestamp - beginning
+                        Just xrange -> i2d xrange
+                 in properFraction (s0 / 60)
+           in printf "%d:%02.0f ago" (m :: Int) (s * 60) & zip [0 ..] & foldMap \(i, c) ->
+                let col = barsPos.col - 1 + i in char c & at Pos {row, col},
           -- Draw the buckets
           summaries & Foldable.toList & zip [0 ..] & foldMap \(i, summary) ->
             let pos =
@@ -228,11 +263,11 @@ renderState beginning state =
                           if pos.row <= row
                             then let col = pos.col in char '┄' & fg (gray 0) & bg green & at Pos {row, col}
                             else mempty
-                      ],
-          -- Draw some temporary boundaries just to see stuff
-          [0, 1, state.size.height - 2, state.size.height - 1] & foldMap \row ->
-            [0 .. state.size.width - 1] & foldMap \col ->
-              char ' ' & bg (gray 6) & at Pos {row, col}
+                      ]
+                      -- Draw some temporary boundaries just to see stuff
+                      -- [0, 1, state.size.height - 2, state.size.height - 1] & foldMap \row ->
+                      --   [0 .. state.size.width - 1] & foldMap \col ->
+                      --     char ' ' & bg (gray 6) & at Pos {row, col}
         ]
 
 data Pong = Pong
