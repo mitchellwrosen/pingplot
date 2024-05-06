@@ -21,6 +21,7 @@ executable pingplot
     DerivingStrategies
     DuplicateRecordFields
     LambdaCase
+    MultiWayIf
     OverloadedRecordDot
     OverloadedStrings
     PatternSynonyms

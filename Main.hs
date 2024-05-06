@@ -90,7 +90,7 @@ tuiMain pongQueue beginning = do
                            in if i2d n1 > state.timestamp - beginning then Nothing else Just n1
                   }
               KeyArrowDown -> state {ymax = if state.ymax > 16 then unsafeShiftR state.ymax 1 else state.ymax}
-              KeyArrowUp -> state {ymax = if state.ymax < 8192 then unsafeShiftL state.ymax 1 else state.ymax}
+              KeyArrowUp -> state {ymax = if state.ymax < 32768 then unsafeShiftL state.ymax 1 else state.ymax}
               KeyChar 'q' -> state {done = True}
               KeyChar 's' -> state {smoothLevel = cycleSmoothLevel state.smoothLevel}
               KeyEsc -> state {done = True}
@@ -155,7 +155,13 @@ renderState beginning state =
       barsSize =
         Size
           { width =
-              let maxWidth = state.size.width - 5
+              let maxWidth =
+                    state.size.width
+                      - if
+                        | state.ymax < 100 -> 3
+                        | state.ymax < 1000 -> 4
+                        | state.ymax < 10000 -> 5
+                        | otherwise -> 6
                in min maxWidth (Seq.length pongs),
             height = state.size.height - 5
           }
