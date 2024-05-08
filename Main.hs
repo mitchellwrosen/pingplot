@@ -1,24 +1,27 @@
 module Main (main) where
 
 import Control.Concurrent.STM
+import Control.Exception (throwIO, try)
 import Control.Foldl qualified as Foldl
-import Control.Monad (forever)
+import Control.Monad (when)
 import Data.Bits (unsafeShiftL, unsafeShiftR)
-import Data.Foldable (fold)
+import Data.Foldable (asum, fold)
 import Data.Foldable qualified as Foldable
 import Data.Function ((&))
+import Data.Functor (($>))
 import Data.List qualified as List
 import Data.Maybe (fromJust)
 import Data.Sequence (Seq)
 import Data.Sequence qualified as Seq
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Data.Text.IO (hGetLine)
+import Data.Text.IO.Utf8 qualified as Text
 import Data.Text.Read qualified as Text
-import Data.Void (Void)
 import GHC.Clock (getMonotonicTime)
 import Ki qualified
-import System.Exit (exitFailure)
+import System.Exit (ExitCode (..), exitFailure, exitWith)
+import System.IO.Error (isEOFError)
+import System.Info qualified
 import System.Process
 import Termbox.Tea
 import Text.Printf (printf)
@@ -30,42 +33,56 @@ main :: IO ()
 main = do
   pongQueue <- newTQueueIO
   beginning <- getMonotonicTime
-  Ki.scoped \scope -> do
-    Ki.fork_ scope (runPingThread pongQueue)
-    tuiMain pongQueue beginning
+  (err, exitCode) <-
+    Ki.scoped \scope -> do
+      pingThread <- Ki.fork scope (runPingThread pongQueue)
+      tuiThread <- Ki.fork scope (tuiMain pongQueue beginning)
+      atomically $
+        asum $
+          [ Ki.await pingThread,
+            Ki.await tuiThread $> (Text.empty, ExitSuccess)
+          ]
+  when (not (Text.null err)) (Text.putStr err)
+  exitWith exitCode
 
-runPingThread :: TQueue Pong -> IO Void
+runPingThread :: TQueue Pong -> IO (Text, ExitCode)
 runPingThread pongQueue =
-  withCreateProcess config \_ stdout _ _ ->
-    forever do
-      line <- hGetLine (fromJust stdout)
-      timestamp <- getMonotonicTime
-      whenJust (parsePong timestamp line) \pong -> do
-        atomically (writeTQueue pongQueue pong)
+  withCreateProcess config \_ stdout stderr processHandle ->
+    Ki.scoped \scope -> do
+      let getln handle =
+            try @IOError (Text.hGetLine handle) >>= \case
+              Left ex | isEOFError ex -> pure Nothing
+              Left ex -> throwIO ex
+              Right line -> pure (Just line)
+      stdoutThread <-
+        Ki.fork scope do
+          let loop = do
+                getln (fromJust stdout) >>= \case
+                  Nothing -> pure ()
+                  Just line -> do
+                    timestamp <- getMonotonicTime
+                    whenJust (parsePong timestamp line) \pong ->
+                      atomically (writeTQueue pongQueue pong)
+                    loop
+          loop
+      stderrThread <- Ki.fork scope (Text.hGetContents (fromJust stderr))
+      exitCode <- waitForProcess processHandle
+      atomically (Ki.await stdoutThread)
+      err <- atomically (Ki.await stderrThread)
+      pure (err, exitCode)
   where
     config :: CreateProcess
     config =
       -- don't change 4 pings per second without adjusting [pings-per-second] elsewhere
-      (shell "ping -i 0.25 -Q 8.8.8.8") {std_err = NoStream, std_out = CreatePipe}
+      (shell command) {std_err = CreatePipe, std_out = CreatePipe}
+      where
+        command =
+          case System.Info.os of
+            "darwin" -> "ping -i 0.25 -Q 8.8.8.8"
+            _ -> "ping -i 0.25 8.8.8.8"
 
 tuiMain :: TQueue Pong -> Double -> IO ()
 tuiMain pongQueue beginning = do
-  let initialize :: Size -> State
-      initialize size =
-        State
-          { done = False,
-            pongs = Seq.empty,
-            size,
-            smoothLevel = SmoothLevel0,
-            timestamp = beginning,
-            xrange = Nothing,
-            ymax = 32
-          }
-
-  let pollEvent :: Maybe (IO Pong)
-      pollEvent =
-        Just (atomically (readTQueue pongQueue))
-
   let handleEvent :: State -> Event Pong -> IO State
       handleEvent state event = do
         pure case event of
@@ -103,18 +120,23 @@ tuiMain pongQueue beginning = do
                 timestamp = pong.timestamp
               }
 
-  let finished :: State -> Bool
-      finished state =
-        state.done
-
   result <-
     run
       Program
-        { initialize,
-          pollEvent,
+        { initialize = \size ->
+            State
+              { done = False,
+                pongs = Seq.empty,
+                size,
+                smoothLevel = SmoothLevel0,
+                timestamp = beginning,
+                xrange = Nothing,
+                ymax = 32
+              },
+          pollEvent = Just (atomically (readTQueue pongQueue)),
           handleEvent,
           render = renderState beginning,
-          finished
+          finished = (.done)
         }
 
   case result of
