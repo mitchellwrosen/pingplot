@@ -174,16 +174,17 @@ renderState beginning state =
             col = state.size.width - barsSize.width
           }
 
+      ylabw :: Int
+      ylabw
+        | state.ymax < 100 = 2
+        | state.ymax < 1000 = 3
+        | state.ymax < 10000 = 4
+        | otherwise = 5
+
       barsSize =
         Size
           { width =
-              let maxWidth =
-                    state.size.width
-                      - if
-                        | state.ymax < 100 -> 3
-                        | state.ymax < 1000 -> 4
-                        | state.ymax < 10000 -> 5
-                        | otherwise -> 6
+              let maxWidth = state.size.width - ylabw - 1
                in min maxWidth (Seq.length pongs),
             height = state.size.height - 5
           }
@@ -244,8 +245,8 @@ renderState beginning state =
           -- Draw the corner
           char '├' & at Pos {row = barsPos.row + barsSize.height, col = barsPos.col - 1},
           -- Draw the top-left label
-          printf "%4d┼" state.ymax & zip [0 ..] & foldMap \(i, c) ->
-            let col = barsPos.col - 5 + i in char c & at Pos {row = barsPos.row, col},
+          printf "%d┼" state.ymax & zip [0 ..] & foldMap \(i, c) ->
+            let col = barsPos.col - ylabw - 1 + i in char c & at Pos {row = barsPos.row, col},
           -- Draw the bottom-left label
           let row = barsPos.row + barsSize.height + 1
               (m, s) =
@@ -282,15 +283,12 @@ renderState beginning state =
                     6 -> char '▆'
                     7 -> char '▇'
                     _ -> mempty
-                clipping = (idealHeight > size.height) || (idealHeight == barsSize.height && cap > 0)
-             in if clipping
-                  then
-                    fold
-                      [ rect pos size (char ' ' & bg yellow),
-                        dottedRows & foldMap \row ->
-                          let col = pos.col in char '┄' & fg (gray 0) & bg yellow & at Pos {row, col}
-                      ]
-                  else
+                clipping
+                  | idealHeight > 2 * size.height = Just red
+                  | (idealHeight > size.height) || (idealHeight == barsSize.height && cap > 0) = Just yellow
+                  | otherwise = Nothing
+             in case clipping of
+                  Nothing ->
                     fold
                       [ rect pos size (char ' ' & bg green),
                         capi & fg green & at (pos & posUp 1),
@@ -299,10 +297,12 @@ renderState beginning state =
                             then let col = pos.col in char '┄' & fg (gray 0) & bg green & at Pos {row, col}
                             else mempty
                       ]
-                      -- Draw some temporary boundaries just to see stuff
-                      -- [0, 1, state.size.height - 2, state.size.height - 1] & foldMap \row ->
-                      --   [0 .. state.size.width - 1] & foldMap \col ->
-                      --     char ' ' & bg (gray 6) & at Pos {row, col}
+                  Just barcolor ->
+                    fold
+                      [ rect pos size (char ' ' & bg barcolor),
+                        dottedRows & foldMap \row ->
+                          let col = pos.col in char '┄' & fg (gray 0) & bg barcolor & at Pos {row, col}
+                      ]
         ]
 
 data Pong = Pong
