@@ -218,8 +218,6 @@ renderState beginning state =
                 SmoothLevel2 -> smoothBuckets5 (.averagePong) (\averagePong summary -> summary {averagePong})
          in smooth summaries0
 
-      _slowest = summarizeBuckets (.averagePong) summaries
-
       -- height of a value, ignoring that we may be zoomed in too far
       vh = (`divMod` 8) . max 1 . round @Double @Int . (* 8) . (* i2d barsSize.height) . (/ w2d state.ymax)
 
@@ -345,7 +343,8 @@ whenJust x f =
 data BucketSummary = BucketSummary
   { numPongs :: {-# UNPACK #-} !Int, -- total number of pongs, including timed-out ones
     numTimedOutPongs :: {-# UNPACK #-} !Int, -- total number of timed-out pongs
-    averagePong :: {-# UNPACK #-} !Double -- average value of non-timed-out pongs
+    averagePong :: {-# UNPACK #-} !Double, -- average value of non-timed-out pongs
+    maxPong :: {-# UNPACK #-} !Double
   }
 
 -- Summarize a bucket as the total number of pongs, the amount of those that timed out (value 0), and the average of the
@@ -356,14 +355,16 @@ summarizeBucket getValue =
 
 summarizeBucketFold :: (a -> Double) -> Foldl.Fold a BucketSummary
 summarizeBucketFold getValue =
-  ( \numPongs numTimedOutPongs pongTotal ->
+  ( \numPongs maxPong numTimedOutPongs pongTotal ->
       BucketSummary
         { numPongs,
           numTimedOutPongs,
-          averagePong = pongTotal `divide` (numPongs - numTimedOutPongs)
+          averagePong = pongTotal `divide` (numPongs - numTimedOutPongs),
+          maxPong
         }
   )
     <$> Foldl.length
+    <*> Foldl.Fold (\acc x -> max acc (getValue x)) 0 id
     <*> Foldl.Fold (\acc x -> if getValue x == 0 then acc + 1 else acc) 0 id
     <*> Foldl.Fold (\acc x -> acc + getValue x) 0 id
   where
@@ -483,15 +484,6 @@ pattern Seq4p a b c d ds <- a Seq.:<| Seq3p b c d ds
 
 {-# COMPLETE Seq0, Seq1, Seq2, Seq3, Seq4p #-}
 
--- Summarize a collection of buckets as the maximum value.
-summarizeBuckets :: (a -> Double) -> Seq a -> Double
-summarizeBuckets getValue =
-  Foldl.fold (summarizeBucketsFold getValue)
-
-summarizeBucketsFold :: (a -> Double) -> Foldl.Fold a Double
-summarizeBucketsFold getValue =
-  Foldl.Fold (\acc x -> max acc (getValue x)) 0 id
-
 -- Bucket an array of sequence-ordered things (possibly with holes):
 --
 --   1. Find out how many pongs go in each bucket, based on the difference in sequence number between the first and
@@ -551,6 +543,22 @@ chunksOf n
        in case Seq.splitAt n1 xs of
             (Seq.Empty, _) -> acc
             (ys, zs) -> go (acc Seq.:|> ys) excess1 zs
+
+_chunksOf2 :: Rational -> Seq a -> Seq (Seq a)
+_chunksOf2 n0
+  | n0 <= 0 = const Seq.empty
+  | otherwise = go Seq.empty n0
+  where
+    go :: Seq (Seq a) -> Rational -> Seq a -> Seq (Seq a)
+    go !acc !n = \case
+      Seq.Empty -> acc
+      xs ->
+        let (i, j) = properFraction n
+            (ys, zs) = Seq.splitAt i xs
+         in case (j, zs) of
+              (0, _) -> go (acc Seq.:|> ys) n0 zs
+              (_, Seq.Empty) -> acc Seq.:|> ys
+              (_, z Seq.:<| _) -> go (acc Seq.:|> (ys Seq.:|> z)) (j + n0) zs
 
 i2d :: Int -> Double
 i2d = realToFrac
